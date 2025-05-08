@@ -59,22 +59,43 @@ def is_file_large(file_path, max_size_mb=250):
     file_size_mb = os.path.getsize(file_path) / (1024 * 1024)  # Convert bytes to MB
     return file_size_mb > max_size_mb
 
-def upload_file_in_chunks(ctx, target_folder, file_path, file_name, chunk_size_mb=60):
+def upload_file_in_chunks(ctx, target_folder, file_path, file_name, chunk_size_mb=10):
     """Upload a file to SharePoint in chunks."""
-    chunk_size = 240 * 1024 * 1024  # Convert MB to bytes
+    chunk_size = chunk_size_mb * 1024 * 1024  # Convert MB to bytes
     file_size = os.path.getsize(file_path)
-    uploaded_file = target_folder.files.create_upload_session(file_name, file_size).execute_query()
-
-    with open(file_path, 'rb') as file:
+    
+    # Create upload session with empty file first
+    target_file = target_folder.upload_file(file_name, b"").execute_query()
+    
+    try:
+        print(f"Starting chunked upload for {file_name} ({file_size/(1024*1024):.2f} MB)")
+        
         offset = 0
-        while offset < file_size:
-            chunk_data = file.read(chunk_size)
-            uploaded_file.upload_chunk(chunk_data, offset, len(chunk_data)).execute_query()
-            offset += len(chunk_data)
-            print(f"Uploaded {offset / (1024 * 1024):.2f} MB of {file_size / (1024 * 1024):.2f} MB")
-
-    print(f"File '{file_name}' uploaded successfully in chunks.")
-    return uploaded_file
+        with open(file_path, 'rb') as f:
+            while offset < file_size:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                
+                # Calculate if this is the final chunk
+                is_last = (offset + len(chunk)) >= file_size
+                
+                # Upload chunk
+                target_file.save_binary(offset, chunk, is_last).execute_query()
+                offset += len(chunk)
+                print(f"Uploaded {offset/(1024*1024):.2f}MB of {file_size/(1024*1024):.2f}MB")
+        
+        print(f"File '{file_name}' uploaded successfully in chunks.")
+        return target_file
+        
+    except Exception as e:
+        print(f"Upload failed at {offset/(1024*1024):.2f}MB: {str(e)}")
+        # Clean up failed upload
+        try:
+            target_file.delete_object().execute_query()
+        except:
+            pass
+        raise
 
 def upload_files_with_wildcard(file_path=None):
     # Get the directory of the current script (upload.exe)
@@ -83,7 +104,7 @@ def upload_files_with_wildcard(file_path=None):
     
     # Verify config file exists before proceeding
     if not os.path.exists(config_file_path):
-        error_msg = f"ERROR: Config file not found at {config_file_path}\n\nPlease ensure:\n1. The file exists at this exact path\n2. OneDrive has synced the file\n3. You have read permissions"
+        error_msg = f"ERROR: Config file not found at {config_file_path}"
         print(error_msg)
         show_popup("Config File Error", error_msg)
         return
@@ -117,20 +138,23 @@ def upload_files_with_wildcard(file_path=None):
                 file_path_to_upload = os.path.join(source_folder_path, file_name)
                 
                 try:
+                    print(f"\nProcessing file: {file_name}")
+                    
                     if is_file_large(file_path_to_upload):
-                        print(f"File '{file_name}' is larger than 250MB. Uploading in chunks...")
+                        print("Large file detected, using chunked upload...")
                         upload_file_in_chunks(ctx, target_folder, file_path_to_upload, file_name)
                     else:
+                        print("Small file, using standard upload...")
                         with open(file_path_to_upload, 'rb') as content_file:
                             file_content = content_file.read()
                             target_folder.upload_file(file_name, file_content).execute_query()
-                            print(f"File '{file_name}' uploaded successfully.")
-
+                    
                     processed_files.append(f"✓ {file_name}")
                     success_count += 1
                     if log_sheet:
                         update_log_sheet(log_sheet, file_name, 'Successful')
                         log_workbook.save(log_file_path)
+                        
                 except Exception as file_error:
                     error_msg = f"Failed to upload {file_name}: {str(file_error)}"
                     print(error_msg)
@@ -140,11 +164,11 @@ def upload_files_with_wildcard(file_path=None):
                         update_log_sheet(log_sheet, file_name, 'Failed')
                         log_workbook.save(log_file_path)
         
-        # Prepare summary message
-        summary_msg = f"Upload completed!\n\nSuccess: {success_count}\nFailed: {failure_count}\n\nFiles processed:\n"
-        summary_msg += "\n".join(processed_files)
-        
-        if not processed_files:
+        # Show summary
+        summary_msg = f"Upload completed!\n\nSuccess: {success_count}\nFailed: {failure_count}"
+        if processed_files:
+            summary_msg += "\n\nFiles processed:\n" + "\n".join(processed_files)
+        else:
             summary_msg = "No files matching the pattern were found to upload."
         
         show_popup("Upload Summary", summary_msg)
