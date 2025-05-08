@@ -60,41 +60,43 @@ def is_file_large(file_path, max_size_mb=250):
     return file_size_mb > max_size_mb
 
 def upload_file_in_chunks(ctx, target_folder, file_path, file_name, chunk_size_mb=10):
-    """Upload a file to SharePoint in chunks."""
+    """Upload a file to SharePoint in chunks using modern API."""
     chunk_size = chunk_size_mb * 1024 * 1024  # Convert MB to bytes
     file_size = os.path.getsize(file_path)
-    
-    # Create upload session with empty file first
-    target_file = target_folder.upload_file(file_name, b"").execute_query()
-    
+    offset = 0  # Initialize offset to ensure it always has a value
+
     try:
-        print(f"Starting chunked upload for {file_name} ({file_size/(1024*1024):.2f} MB)")
-        
-        offset = 0
-        with open(file_path, 'rb') as f:
+        print(f"Starting chunked upload for '{file_name}' ({file_size / 1024 / 1024:.2f} MB total)")
+
+        with open(file_path, 'rb') as file:
+            # Start the upload session
+            first_chunk = file.read(chunk_size)
+            uploaded_file = target_folder.files.create_upload_session(file_name, len(first_chunk)).execute_query()
+            upload_id = uploaded_file.upload_id
+
+            offset += len(first_chunk)
+            print(f"Uploaded first chunk: {offset / 1024 / 1024:.2f}MB")
+
+            # Continue uploading chunks
             while offset < file_size:
-                chunk = f.read(chunk_size)
+                chunk = file.read(chunk_size)
                 if not chunk:
                     break
-                
-                # Calculate if this is the final chunk
-                is_last = (offset + len(chunk)) >= file_size
-                
-                # Upload chunk
-                target_file.save_binary(offset, chunk, is_last).execute_query()
+
+                if offset + len(chunk) < file_size:
+                    uploaded_file = target_folder.files.continue_upload(upload_id, offset, chunk).execute_query()
+                else:
+                    # Finalize the upload with the last chunk
+                    uploaded_file = target_folder.files.finish_upload(upload_id, offset, chunk).execute_query()
+
                 offset += len(chunk)
-                print(f"Uploaded {offset/(1024*1024):.2f}MB of {file_size/(1024*1024):.2f}MB")
-        
-        print(f"File '{file_name}' uploaded successfully in chunks.")
-        return target_file
-        
+                print(f"Uploaded {offset / 1024 / 1024:.2f}MB of {file_size / 1024 / 1024:.2f}MB")
+
+        print(f"Successfully uploaded '{file_name}'")
+        return uploaded_file
+
     except Exception as e:
-        print(f"Upload failed at {offset/(1024*1024):.2f}MB: {str(e)}")
-        # Clean up failed upload
-        try:
-            target_file.delete_object().execute_query()
-        except:
-            pass
+        print(f"Upload failed at {offset / 1024 / 1024:.2f}MB: {str(e)}")
         raise
 
 def upload_files_with_wildcard(file_path=None):
