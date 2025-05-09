@@ -4,6 +4,7 @@ def upload_file_in_chunks(ctx, target_folder, file_path, file_name, chunk_size_m
     file_size = os.path.getsize(file_path)
     offset = 0  # Explicitly initialize offset
     upload_session = None
+    target_file_url = f"{target_folder.server_relative_url}/{file_name}"
     
     try:
         print(f"Starting upload for '{file_name}' ({file_size/1024/1024:.2f} MB)")
@@ -44,6 +45,7 @@ def upload_file_in_chunks(ctx, target_folder, file_path, file_name, chunk_size_m
         
         # 3. Verification
         print("Verifying upload completion...")
+        uploaded_file = ctx.web.get_file_by_server_relative_url(target_file_url)
         ctx.load(uploaded_file)
         ctx.execute_query()
         
@@ -66,14 +68,25 @@ def upload_file_in_chunks(ctx, target_folder, file_path, file_name, chunk_size_m
                 print(f"Cleanup failed: {str(cleanup_error)}")
         
         # Check if file was partially uploaded
-        existing_file = target_folder.files.get_by_name(file_name)
         try:
-            ctx.load(existing_file)
+            existing_file = ctx.web.get_file_by_server_relative_url(target_file_url)
+            ctx.load(existing_file, ["Length"])
             ctx.execute_query()
-            actual_size = existing_file.properties.get('Length', 0)
+            actual_size = existing_file.length
             if actual_size > 0:
                 print(f"Warning: Partial upload exists ({actual_size} bytes)")
         except:
             pass
         
         raise Exception(error_msg)
+
+def verify_upload(ctx, folder, file_name, expected_size):
+    """Verify a file was uploaded correctly"""
+    file_url = f"{folder.server_relative_url}/{file_name}"
+    try:
+        file = ctx.web.get_file_by_server_relative_url(file_url)
+        ctx.load(file, ["Length"])
+        ctx.execute_query()
+        return file.length == expected_size
+    except:
+        return False
